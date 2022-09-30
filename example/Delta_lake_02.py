@@ -86,6 +86,14 @@ employees_delta_after_replace.printSchema()
 # MAGIC - A schema
 # MAGIC 
 # MAGIC **NOTE:** In Databricks Runtime 8.0 and above, Delta Lake is the default format and you don’t need **`USING DELTA`**.
+# MAGIC 
+# MAGIC <i18n value="a00174f3-bbcd-4ee3-af0e-b8d4ccb58481"/>
+# MAGIC 
+# MAGIC 
+# MAGIC 
+# MAGIC If we try to go back and run that cell again...it will error out! This is expected - because the table exists already, we receive an error.
+# MAGIC 
+# MAGIC We can add in an additional argument, **`IF NOT EXISTS`** which checks if the table exists. This will overcome our error.
 
 # COMMAND ----------
 
@@ -93,3 +101,94 @@ employees_delta_after_replace.printSchema()
 # MAGIC CREATE TABLE IF NOT EXISTS students_v1
 # MAGIC   (id INT, name STRING, value DOUBLE)
 # MAGIC -- This table is created inside default database << where is the default location of that table   
+
+# COMMAND ----------
+
+# MAGIC %md #### Now try to insert some row in the table which we created using python api 
+
+# COMMAND ----------
+
+#1 Read data from csv 
+emp_data_read = spark.read.format('csv').options(inferSchema="true",header="true").load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/raw_csv_files/emp.csv')
+
+#2 create view of tables 
+emp_data_read.createOrReplaceTempView('insert_records')
+
+from pyspark.sql.functions import col
+
+data_type_change=(emp_data_read.withColumn('COMM',col('COMM').cast("int"))
+                  .withColumnRenamed('SAL','SALARY')
+                 )
+
+display(data_type_change)
+
+# one more error due to column name mismatch in delta table it is salary but in file it is sal
+
+
+# COMMAND ----------
+
+# insert in table, we have used append mode 
+data_type_change.write.format("delta").mode("append").save('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+
+# COMMAND ----------
+
+employees_delta=spark.read.format('delta').load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+#DeltaTable.history(employees_delta)
+from delta.tables import *
+employees_delta_his = DeltaTable.forPath(spark, 'abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+fullHistoryDF = employees_delta_his.history() 
+display(fullHistoryDF)
+# this is the only method how we can display history
+
+# COMMAND ----------
+
+fullHistoryDF.createOrReplaceTempView('fullHistoryDF')
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC select * from fullHistoryDF;
+
+# COMMAND ----------
+
+# MAGIC %md <i18n value="4ecaf351-d4a4-4803-8990-5864995287a4"/>
+# MAGIC 
+# MAGIC 
+# MAGIC 
+# MAGIC What may surprise you is that Delta Lake guarantees that any read against a table will **always** return the most recent version of the table, and that you'll never encounter a state of deadlock due to ongoing operations.
+# MAGIC 
+# MAGIC To repeat: table reads can never conflict with other operations, and the newest version of your data is immediately available to all clients that can query your lakehouse. Because all transaction information is stored in cloud object storage alongside your data files, concurrent reads on Delta Lake tables is limited only by the hard limits of object storage on cloud vendors. (**NOTE**: It's not infinite, but it's at least thousands of reads per second.)
+# MAGIC 
+# MAGIC 
+# MAGIC 
+# MAGIC ## Updating Records
+# MAGIC 
+# MAGIC Updating records provides atomic guarantees as well: we perform a snapshot read of the current version of our table, find all fields that match our **`WHERE`** clause, and then apply the changes as described.
+# MAGIC 
+# MAGIC Below, we find all students that have a name starting with the letter **T** and add 1 to the number in their **`value`** column.
+
+# COMMAND ----------
+
+employees_delta.createOrReplaceTempView('employees_delta')
+
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC update employees_delta set salary=salary+20;
+# MAGIC -- we can see snapshot happend and new file is written
+
+# COMMAND ----------
+
+display(employees_delta)
+
+# COMMAND ----------
+
+output_dir='abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta/_delta_log/'
+output_dir_2='abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta/'
+
+display(dbutils.fs.ls(output_dir_2))
+
+# COMMAND ----------
+
+
