@@ -187,8 +187,142 @@ display(employees_delta)
 output_dir='abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta/_delta_log/'
 output_dir_2='abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta/'
 
-display(dbutils.fs.ls(output_dir_2))
+display(dbutils.fs.ls(output_dir))
 
 # COMMAND ----------
 
+from delta.tables import *
+employees_delta_his = DeltaTable.forPath(spark, 'abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+employees_delta_his.update(
+    set = {'salary':'salary-20'}
+)
 
+# we have done update using forPath... command only.. not able using the employees_delta=spark.read.format('delta').load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+# also we are not able to describe the table detail using above method hence have to use forPath method
+
+# COMMAND ----------
+
+employees_delta=spark.read.format('delta').load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+display(employees_delta)
+
+# COMMAND ----------
+
+# condition using SQL formatted string
+deltaTable.update(
+    condition = "eventType = 'clck'",
+    set = { "eventType": "'click'" } )
+
+# condition using Spark SQL functions
+deltaTable.update(
+    condition = col("eventType") == "clck", # this is like where clause 
+    set = { "eventType": lit("click") } )
+
+# COMMAND ----------
+
+#https://asadatalake9mf5gvx.blob.core.windows.net/cdctest/raw_csv_files/emp_sal_update_1.csv
+
+# COMMAND ----------
+
+# MAGIC %md <i18n value="b5b346b8-a3df-45f2-88a7-8cf8dea6d815"/>
+# MAGIC 
+# MAGIC 
+# MAGIC 
+# MAGIC ## Using Merge
+# MAGIC 
+# MAGIC Some SQL systems have the concept of an upsert, which allows updates, inserts, and other data manipulations to be run as a single command.
+# MAGIC 
+# MAGIC Databricks uses the **`MERGE`** keyword to perform this operation.
+# MAGIC 
+# MAGIC Consider the following temporary view, which contains 4 records that might be output by a Change Data Capture (CDC) feed
+# MAGIC 
+# MAGIC 
+# MAGIC 
+# MAGIC Using the syntax we've seen so far, we could filter from this view by type to write 3 statements, one each to insert, update, and delete records. But this would result in 3 separate transactions; if any of these transactions were to fail, it might leave our data in an invalid state.
+# MAGIC 
+# MAGIC Instead, we combine these actions into a single atomic transaction, applying all 3 types of changes together.
+# MAGIC 
+# MAGIC **`MERGE`** statements must have at least one field to match on, and each **`WHEN MATCHED`** or **`WHEN NOT MATCHED`** clause can have any number of additional conditional statements.
+# MAGIC 
+# MAGIC Here, we match on our **`id`** field and then filter on the **`type`** field to appropriately update, delete, or insert our records.
+
+# COMMAND ----------
+
+#1 read the file which containe changed data. then using that do megre
+emp_data_update = spark.read.format('csv').options(inferSchema="true",header="true").load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/raw_csv_files/emp_sal_update_1.csv')
+#2 change datatype of commission colum
+
+from pyspark.sql.functions import col
+
+data_type_change=(emp_data_update.withColumn('COMM',col('COMM').cast("int"))
+                  )
+
+# COMMAND ----------
+
+from delta.tables import *
+
+deltaTable = DeltaTable.forPath(spark, 'abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+
+deltaTable.alias("target").merge(
+       source=data_type_change.alias("source"),
+       condition  = "source.EMPNO = target.EMPNO") \
+      .whenMatchedUpdateAll()  \
+      .whenNotMatchedInsertAll()\
+      .execute()
+
+# COMMAND ----------
+
+display(data_type_change)
+
+# COMMAND ----------
+
+emp_data_updated = spark.read.format('delta').options(header="true").load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+display(emp_data_updated)
+
+# COMMAND ----------
+
+fullHistoryDF = deltaTable.history()
+display(fullHistoryDF)
+
+# COMMAND ----------
+
+# MAGIC %md ### Find changes between 2 versions of a table
+
+# COMMAND ----------
+
+df1 = spark.read.format("delta").load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+df2 = spark.read.format("delta").option("versionAsOf",3).load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+#df1.exceptAll(df2).show()
+display(df1.exceptAll(df2))
+
+#since we have all the same row it is showing all rows
+
+
+# COMMAND ----------
+
+# Again doing merge operation 
+from delta.tables import *
+from pyspark.sql.functions import col
+
+#1 read the file which containe changed data. then using that do megre
+emp_data_new_file = spark.read.format('csv').options(inferSchema="true",header="true").load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/raw_csv_files/emp_sal_update_1.csv')
+#2 change datatype of commission colum from string to int
+emp_data_update=(emp_data_new_file.withColumn('COMM',col('COMM').cast("int")))
+
+
+#3 read the delta table 
+deltaTable = DeltaTable.forPath(spark, 'abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+
+#4 merger delta table 
+deltaTable.alias("target").merge(
+       source=emp_data_update.alias("source"),
+       condition  = "source.EMPNO = target.EMPNO") \
+      .whenMatchedUpdateAll()  \
+      .whenNotMatchedInsertAll()\
+      .execute()
+
+# COMMAND ----------
+
+df1 = spark.read.format("delta").load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+df2 = spark.read.format("delta").option("versionAsOf",5).load('abfss://cdctest@asadatalake9mf5gvx.dfs.core.windows.net/python_delta/demployees_delta')
+#df1.exceptAll(df2).show()
+display(df1.exceptAll(df2))
